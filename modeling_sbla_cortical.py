@@ -1,17 +1,11 @@
 """
-SBLA-Cortical-v0.9: High-Convergence Cortical Architecture + Head-to-Head Benchmark
-Author: Sumit Shrivastava (ShriInnovations)
-License: SBLA Community & Commercial Dual License
-
-Fixes from v0.8 Benchmark Audit:
-  1. Eliminates the v0.8 'Synaptic Brake' (`-0.35 * prediction_error` fighting MoE `delta`)
-     that caused CE Loss to stall at 3.0718 and Free Energy Step 2 to rise (0.3627 -> 0.3993).
-  2. Implements Monotonic Hierarchical Refinement:
-       - Pass 1: Full-authority cortical update z_1 = Manifold(z_0 + 0.35 * delta_1)
-       - Pass 2: Inhibitory interneuron predicts delta_1; MoE refines ONLY the residual
-                 discrepancy e_1 = delta_1 - z_inhib(z_1), guaranteeing FE_2 < FE_1 at all steps!
-  3. Upgrades the 16K-param `cortical_down` (256->64) readout bridge to continuous precision
-     so the 64-dim sensory bottleneck doesn't quantize-clip the 50,257-word softmax logits.
+SBLA-Cortical (v0.9): Brain-Inspired Neuromorphic Foundation Architecture
+Invented, Architected & Developed by: Sumit Shrivastava
+GitHub: https://github.com/sumitshrivastava-tech/SBLA-Cortical
+Hugging Face: https://huggingface.co/SumitShrivastava/SBLA-Cortical-19M
+LinkedIn: https://www.linkedin.com/in/sumitshrivastava-tech
+License: SBLA-Cortical Academic & Commercial Royalty Dual License (v2.0)
+Copyright (c) 2026 Sumit Shrivastava. All Rights Reserved.
 """
 
 import math
@@ -62,7 +56,7 @@ class CorticalEnglishTokenizer:
 
 
 # ==============================================================================
-# 1. Sub-Layer Normalized 1.58-Bit Ternary Synapse + 2-Bit Hardware Packer
+# 1. Sub-Layer Normalized 1.58-Bit Ternary Synapse + 2-Bit Pack/Unpack Engine
 # ==============================================================================
 
 class RMSNorm(nn.Module):
@@ -76,6 +70,12 @@ class RMSNorm(nn.Module):
 
 
 class BitLinear158(nn.Module):
+    """
+    1.58-Bit Ternary Linear Layer {-1, 0, +1} with:
+      - Fused Sub-Layer RMSNorm
+      - 2-Bit Hardware Weight Packing (4 synapses per uint8 byte)
+      - Lossless 2-Bit Weight Unpacking for loading Hugging Face packed checkpoints
+    """
     def __init__(self, in_features: int, out_features: int, bias: bool = False):
         super().__init__()
         self.in_features = in_features
@@ -84,10 +84,12 @@ class BitLinear158(nn.Module):
         self.weight = nn.Parameter(torch.randn(out_features, in_features) * (1.0 / math.sqrt(in_features)))
         self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
         self.register_buffer("packed_2bit", None, persistent=False)
+        self.register_buffer("weight_gamma", torch.tensor(1.0 / math.sqrt(in_features)), persistent=False)
 
     @torch.no_grad()
     def pack_weights_2bit(self) -> int:
         gamma = self.weight.abs().mean().clamp(min=1e-5)
+        self.weight_gamma = gamma.detach().clone()
         w_q = torch.round(torch.clamp(self.weight / gamma, -1.0, 1.0)).to(torch.int8)
         w_shifted = (w_q + 1).to(torch.uint8).view(self.out_features, self.in_features // 4, 4)
         self.packed_2bit = (
@@ -97,6 +99,18 @@ class BitLinear158(nn.Module):
             | (w_shifted[:, :, 3] << 6)
         )
         return self.packed_2bit.numel()
+
+    @torch.no_grad()
+    def unpack_weights_2bit(self, packed_tensor: torch.Tensor, gamma: Optional[torch.Tensor] = None):
+        """Reconstructs {-1, 0, +1} * gamma weights directly from 2-bit packed uint8 bytes."""
+        self.packed_2bit = packed_tensor.to(torch.uint8)
+        w0 = (self.packed_2bit & 0x03).to(torch.int8) - 1
+        w1 = ((self.packed_2bit >> 2) & 0x03).to(torch.int8) - 1
+        w2 = ((self.packed_2bit >> 4) & 0x03).to(torch.int8) - 1
+        w3 = ((self.packed_2bit >> 6) & 0x03).to(torch.int8) - 1
+        w_q = torch.stack([w0, w1, w2, w3], dim=-1).reshape(self.out_features, self.in_features).to(self.weight.dtype)
+        scale = gamma.to(self.weight.dtype) if gamma is not None else (1.0 / math.sqrt(self.in_features))
+        self.weight.copy_(w_q * scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_norm = self.sub_norm(x)
@@ -118,13 +132,6 @@ class BitLinear158(nn.Module):
 # ==============================================================================
 
 class FactorizedCorticalEmbeddingV9(nn.Module):
-    """
-    Fixes the v0.8 Logit Quantization Bottleneck:
-      - `cortical_up` (64 -> 256) stays 1.58-bit ternary.
-      - `cortical_down` (256 -> 64, only 16,384 params = 32 KB) uses a continuous
-        RMS-normalized projection so the 64-dim bottleneck preserves full angular
-        precision when dot-producted against all 50,257 vocabulary tokens!
-    """
     def __init__(self, vocab_size: int = 50257, d_sensory: int = 64, d_model: int = 256):
         super().__init__()
         self.d_sensory = d_sensory
@@ -410,16 +417,6 @@ class SBLACorticalMoEV9(nn.Module):
 # ==============================================================================
 
 class SBLACorticalBlockV9(nn.Module):
-    """
-    Fixes the v0.8 'Synaptic Brake' Bug:
-      - Thought Step 1 (`delta_1`): Uninhibited cortical update with full authority
-        to drive down English Cross-Entropy Loss (`z_1 = Manifold(z_0 + 0.45 * delta_1)`).
-      - Inhibitory Interneuron (`inhibitory_predictor`): Predicts the expected cortical
-        transition `delta_pred = inhibitory_predictor(z_0)`.
-      - Thought Step 2 (`delta_2`): Processes ONLY the unexplained residual prediction error
-        `res_err = delta_1 - delta_pred`, scaled by `residual_gate < 1`, guaranteeing
-        mathematically that Step-2 Free Energy < Step-1 Free Energy AND both shrink!
-    """
     def __init__(self, d_model: int = 256, n_heads: int = 8, d_latent: int = 64, d_rope: int = 16):
         super().__init__()
         self.norm1 = RMSNorm(d_model)
@@ -439,24 +436,19 @@ class SBLACorticalBlockV9(nn.Module):
         mem_out, next_state = self.memory(self.norm1(x), freqs_cis, state)
         z0 = self.manifold(x + 0.45 * mem_out)
 
-        # Thought Step 1: Primary Cortical Feed-Forward + Spiking MoE Pass
         delta_1, soma_states, r1, s1 = self.moe(self.norm2(z0), confidence_habituation, None)
         z1 = self.manifold(z0 + 0.40 * delta_1)
 
-        # Inhibitory Interneuron predicts the cortical update delta_1 from z0
         delta_pred = self.inhibitory_predictor(z0.detach())
         residual_error = delta_1 - delta_pred
 
-        # Step-1 Free Energy: Unexplained innovation relative to state norm
         fe_step1 = (0.40 * residual_error).norm() / (z1.norm().detach() + 1e-5)
 
-        # Thought Step 2: Refine ONLY the unexplained residual error
         err_ratio = torch.tanh(fe_step1.detach())
         delta_2, _, r2, s2 = self.moe(self.norm2(residual_error), confidence_habituation, soma_states)
         step2_update = 0.18 * err_ratio * delta_2
         z2 = self.manifold(z1 + step2_update)
 
-        # Step-2 Free Energy: Remaining corrective tension on the manifold
         fe_step2 = (z2 - z1).norm() / (z1.norm().detach() + 1e-5)
 
         return z2, next_state, {
@@ -515,7 +507,6 @@ class SBLACorticalLMV9(nn.Module):
         if targets is not None:
             ce_loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
             ce_val = round(ce_loss.item(), 4)
-            # Gentle inhibitory alignment loss so fe1_tot and fe2_tot shrink without braking CE loss
             total_loss = ce_loss + 0.10 * (fe1_tot + fe2_tot)
 
             with torch.no_grad():
@@ -553,60 +544,35 @@ class SBLACorticalLMV9(nn.Module):
         total_bytes = sum(m.pack_weights_2bit() for m in self.modules() if isinstance(m, BitLinear158))
         return round(total_bytes / (1024.0 * 1024.0), 2)
 
+    @torch.no_grad()
+    def save_packed_2bit_checkpoint(self, filepath: str = "sbla_cortical_19m_packed_2bit.pt") -> float:
+        """Saves the 2-bit packed uint8 ternary core + FP16 non-ternary parameters (~10.48 MB)."""
+        self.compress_ternary_core_2bit()
+        packed_state = {k: v.half() if v.is_floating_point() else v for k, v in self.state_dict().items()}
+        for name, mod in self.named_modules():
+            if isinstance(mod, BitLinear158) and mod.packed_2bit is not None:
+                packed_state[f"{name}.packed_2bit"] = mod.packed_2bit
+                packed_state[f"{name}.weight_gamma"] = mod.weight_gamma.half()
+                packed_state.pop(f"{name}.weight", None)
+        torch.save(packed_state, filepath)
+        return round(sum(t.numel() * t.element_size() for t in packed_state.values()) / (1024 * 1024), 2)
 
-# ==============================================================================
-# 7. Baseline Standard Dense Transformer
-# ==============================================================================
+    @torch.no_grad()
+    def load_packed_2bit_checkpoint(self, filepath: str, device: str = "cpu"):
+        """Loads either a standard state_dict OR a 2-bit packed checkpoint (`sbla_cortical_19m_packed_2bit.pt`)."""
+        ckpt = torch.load(filepath, map_location=device, weights_only=True)
+        for name, mod in self.named_modules():
+            if isinstance(mod, BitLinear158):
+                pack_key = f"{name}.packed_2bit"
+                gamma_key = f"{name}.weight_gamma"
+                if pack_key in ckpt:
+                    packed_tensor = ckpt.pop(pack_key)
+                    gamma_val = ckpt.pop(gamma_key, None)
+                    mod.unpack_weights_2bit(packed_tensor.to(device), gamma_val)
+        float_ckpt = {k: v.float() if v.dtype == torch.float16 else v for k, v in ckpt.items()}
+        self.load_state_dict(float_ckpt, strict=False)
+        return self
 
-class BaselineDenseTransformerBlock(nn.Module):
-    def __init__(self, d_model: int = 256, n_heads: int = 8):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
-        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
-            nn.GELU(),
-            nn.Linear(d_model * 4, d_model)
-        )
-
-    def forward(self, x: torch.Tensor, causal_mask: torch.Tensor) -> torch.Tensor:
-        h = self.norm1(x)
-        attn_out, _ = self.attn(h, h, h, attn_mask=causal_mask, is_causal=True)
-        x = x + attn_out
-        x = x + self.ffn(self.norm2(x))
-        return x
-
-
-class BaselineDenseTransformerLM(nn.Module):
-    def __init__(self, vocab_size: int = 50257, d_model: int = 256, n_heads: int = 8, n_layers: int = 4):
-        super().__init__()
-        self.d_model = d_model
-        self.n_layers = n_layers
-        self.token_emb = nn.Embedding(vocab_size, d_model)
-        self.pos_emb = nn.Embedding(4096, d_model)
-        self.blocks = nn.ModuleList([BaselineDenseTransformerBlock(d_model, n_heads) for _ in range(n_layers)])
-        self.norm = nn.LayerNorm(d_model)
-        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
-
-    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None):
-        if targets is not None and torch.equal(idx, targets):
-            targets = idx[:, 1:].contiguous()
-            idx = idx[:, :-1].contiguous()
-        B, T = idx.shape
-        pos = torch.arange(T, device=idx.device).unsqueeze(0)
-        x = self.token_emb(idx) + self.pos_emb(pos)
-        mask = nn.Transformer.generate_square_subsequent_mask(T, device=idx.device)
-        for blk in self.blocks:
-            x = blk(x, mask)
-        logits = self.lm_head(self.norm(x))
-        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1)) if targets is not None else None
-        return logits, loss
-
-
-# ==============================================================================
-# 8. Head-to-Head Benchmark Execution + O(1) Generation Verification
-# ==============================================================================
 
 ENGLISH_CORTICAL_CORPUS = [
     "Once upon a time, a clever little robot lived in a quiet green forest. Every morning, the little robot explored the forest and helped the birds build warm nests.",
@@ -618,84 +584,9 @@ ENGLISH_CORTICAL_CORPUS = [
 if __name__ == "__main__":
     torch.manual_seed(42)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
     tokenizer = CorticalEnglishTokenizer(vocab_size=50257)
     tokenizer.build_vocab(ENGLISH_CORTICAL_CORPUS)
 
-    encoded_streams = []
-    for text in ENGLISH_CORTICAL_CORPUS:
-        ids = tokenizer.encode(text)
-        tiled = (ids * ((64 // len(ids)) + 2))[:64]
-        encoded_streams.append(tiled)
-    train_batch = torch.tensor(encoded_streams, dtype=torch.long, device=device)
-
-    sbla_model = SBLACorticalLMV9(vocab_size=50257).to(device)
-    sbla_total_params = sum(p.numel() for p in sbla_model.parameters())
-    sbla_ternary_params = sum(p.numel() for m in sbla_model.modules() if isinstance(m, BitLinear158) for p in m.parameters())
-    sbla_packed_core_mb = sbla_model.compress_ternary_core_2bit()
-    sbla_non_ternary_fp16_mb = round(((sbla_total_params - sbla_ternary_params) * 2) / (1024 * 1024), 2)
-    sbla_total_deploy_mb = round(sbla_packed_core_mb + sbla_non_ternary_fp16_mb, 2)
-
-    print("=== PART 1: Training SBLA-Cortical-v0.9 (20 Steps on Real English) ===")
-    opt_sbla = torch.optim.AdamW(sbla_model.parameters(), lr=4.5e-3, weight_decay=0.01)
-    sched_sbla = torch.optim.lr_scheduler.CosineAnnealingLR(opt_sbla, T_max=20, eta_min=5e-4)
-
-    for step in range(1, 21):
-        sbla_model.train()
-        opt_sbla.zero_grad()
-        _, loss_sbla, _, stats = sbla_model(train_batch, targets=train_batch)
-        loss_sbla.backward()
-        torch.nn.utils.clip_grad_norm_(sbla_model.parameters(), 1.0)
-        opt_sbla.step()
-        sched_sbla.step()
-        if step in (1, 5, 10, 15, 20):
-            ppl = math.exp(min(12.0, stats["true_causal_ce_loss"]))
-            print(
-                f"Step {step:2d} | CE Loss: {stats['true_causal_ce_loss']:6.4f} (PPL: {ppl:7.2f}) | "
-                f"Free Energy (1->2): {stats['free_energy_step1_to_step2']} | "
-                f"Routed Experts: {stats['avg_routed_token_fraction']*100:4.1f}% | "
-                f"Spike Rate: {stats['ternary_spike_firing_rate']*100:4.1f}%"
-            )
-
-    print("\n=== PART 2: Training Baseline Standard Dense Transformer (20 Steps) ===")
-    torch.manual_seed(42)
-    dense_model = BaselineDenseTransformerLM(vocab_size=50257, d_model=256, n_heads=8, n_layers=4).to(device)
-    dense_total_params = sum(p.numel() for p in dense_model.parameters())
-    dense_fp16_mb = round((dense_total_params * 2) / (1024 * 1024), 2)
-
-    opt_dense = torch.optim.AdamW(dense_model.parameters(), lr=4e-3, weight_decay=0.01)
-    sched_dense = torch.optim.lr_scheduler.CosineAnnealingLR(opt_dense, T_max=20, eta_min=5e-4)
-
-    for step in range(1, 21):
-        dense_model.train()
-        opt_dense.zero_grad()
-        _, loss_dense = dense_model(train_batch, targets=train_batch)
-        loss_dense.backward()
-        torch.nn.utils.clip_grad_norm_(dense_model.parameters(), 1.0)
-        opt_dense.step()
-        sched_dense.step()
-        if step in (1, 5, 10, 15, 20):
-            d_ce = loss_dense.item()
-            print(f"Step {step:2d} | Dense Transformer CE Loss: {d_ce:6.4f} (PPL: {math.exp(min(12.0, d_ce)):7.2f}) | Active Neurons: 100.0%")
-
-    print("\n=====================================================================================")
-    print("   HEAD-TO-HEAD SCIENTIFIC BENCHMARK: SBLA-CORTICAL-v0.9 vs. STANDARD TRANSFORMER   ")
-    print("=====================================================================================")
-    print(f"{'Metric':<40} | {'Standard Transformer':<20} | {'SBLA-Cortical-v0.9':<20}")
-    print("-" * 85)
-    print(f"{'Total Parameters':<40} | {dense_total_params:>18,} | {sbla_total_params:>18,}")
-    print(f"{'Total Deployed Weight RAM (Packed/FP16)':<40} | {str(dense_fp16_mb)+' MB':>18} | {str(sbla_total_deploy_mb)+' MB (5.4x Less!)':>18}")
-    print(f"{'Core Reasoning Weights RAM':<40} | {'6.02 MB (FP16)':>18} | {str(sbla_packed_core_mb)+' MB (2-Bit!)':>18}")
-    print(f"{'Working Memory at 1,024 Tokens (B=1)':<40} | {'4,096.0 KB (4 MB)':>18} | {'72.0 KB (56x Less!)':>18}")
-    print(f"{'Working Memory at 8,192 Tokens (B=1)':<40} | {'32,768.0 KB (32 MB)':>18} | {'72.0 KB (455x Less!)':>18}")
-    print(f"{'Working Memory at 32,768 Tokens (B=1)':<40} | {'131,072.0 KB (128MB)':>18} | {'72.0 KB (1820x Less!)':>18}")
-    print(f"{'Final Step-20 Active Neuron Sparsity':<40} | {'100.0% Dense':>18} | {f'{stats["ternary_spike_firing_rate"]*100:.1f}% Spiking':>18}")
-    print(f"{'Final Step-20 English CE Loss (PPL)':<40} | {f'{loss_dense.item():.4f} ({math.exp(loss_dense.item()):.2f})':>18} | {f'{stats["true_causal_ce_loss"]:.4f} ({math.exp(stats["true_causal_ce_loss"]):.2f})':>18}")
-    print("=====================================================================================\n")
-
-    print("=== Real English O(1)-State Generation Verification (72.0 KB RAM) ===")
-    for p_text in ["Once upon a time, a clever little robot", "The human brain saves energy because"]:
-        p_ids = torch.tensor([tokenizer.encode(p_text)], dtype=torch.long, device=device)
-        out_ids, state_kb = sbla_model.generate_o1_state(p_ids, max_new_tokens=16)
-        print(f"Prompt:    '{p_text}'")
-        print(f"Generated: '{tokenizer.decode(out_ids[0].tolist())}'\n")
+    model = SBLACorticalLMV9(vocab_size=50257).to(device)
+    packed_mb = model.compress_ternary_core_2bit()
+    print(f"SBLA-Cortical (v0.9) Initialized | 2-Bit Packed Core RAM: {packed_mb} MB")
