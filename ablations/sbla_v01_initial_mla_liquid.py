@@ -1,6 +1,6 @@
 """
 Sparse-Binary Liquid-Latent Architecture (SBLA-Cortical v0.1)
-Author: Sumit Shrivastava (ShriInnovations)
+Author: Sumit Shrivastava
 License: SBLA Community & Commercial Dual License
 """
 
