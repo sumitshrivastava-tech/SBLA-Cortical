@@ -2,9 +2,11 @@
   <h1>🧠 SBLA-Cortical (v0.9)</h1>
   <h3>Unifying 1.58-Bit Ternary Synapses, O(1) Dendritic Fast-Weight Memory, and Homeostatic Spiking Predictive Coding for Ultra-Efficient Foundation Models</h3>
   <p>
-    <b>Invented, Architected & Developed by <a href="https://www.linkedin.com/in/sumitshrivastava-tech">Sumit Shrivastava</a></b>
-  </p>
-  <p>
+    <b>Invented, Architected & Developed by <a href="https://www.linkedin.com/in/sumitshrivastava-tech">Sumit Shrivastava</a></b><p>
+
+  <a href="https://doi.org/10.5281/zenodo.23499684">
+    <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23499684.svg" alt="DOI">
+  </a>
     <a href="https://huggingface.co/SumitShrivastava/SBLA-Cortical-19M"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-SBLA--Cortical--19M-blue" alt="Hugging Face"></a>
     <a href="./SBLA_Cortical_Sumit_Shrivastava_2026.pdf"><img src="https://img.shields.io/badge/Paper-PDF%20Monograph-b31b1b" alt="Paper PDF"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Academic%20Free%20%7C%20Commercial%20Royalty-green" alt="License"></a>
@@ -129,7 +131,8 @@ If you use, reference, or build upon **SBLA-Cortical** in any research paper, re
   title   = {SBLA-Cortical: Unifying 1.58-Bit Ternary Synapses, O(1) Dendritic Fast-Weight Memory, and Homeostatic Spiking Predictive Coding for Ultra-Efficient Foundation Models},
   author  = {Shrivastava, Sumit},
   year    = {2026},
-  url     = {https://github.com/sumitshrivastava-tech/SBLA-Cortical},
-  note    = {Model Hub: https://huggingface.co/SumitShrivastava/SBLA-Cortical-19M}
+  doi     = {10.5281/zenodo.23499684},
+  url     = {https://doi.org/10.5281/zenodo.23499684},
+  note    = {GitHub: https://github.com/sumitshrivastava-tech/SBLA-Cortical | Hugging Face: https://huggingface.co/SumitShrivastava/SBLA-Cortical-19M}
 }
 ```
