@@ -4,9 +4,15 @@
   <p>
     <b>Invented, Architected & Developed by <a href="https://www.linkedin.com/in/sumitshrivastava-tech">Sumit Shrivastava</a></b><p>
 
+  <p align="center">
+  <a href="https://colab.research.google.com/github/sumitshrivastava-tech/SBLA-Cortical/blob/main/SBLA_Cortical_v09_Demo.ipynb">
+    <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab">
+  </a>
+  &nbsp;&nbsp;
   <a href="https://doi.org/10.5281/zenodo.23499684">
     <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23499684.svg" alt="DOI">
   </a>
+</p>
     <a href="https://huggingface.co/SumitShrivastava/SBLA-Cortical-19M"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-SBLA--Cortical--19M-blue" alt="Hugging Face"></a>
     <a href="./SBLA_Cortical_Sumit_Shrivastava_2026.pdf"><img src="https://img.shields.io/badge/Paper-PDF%20Monograph-b31b1b" alt="Paper PDF"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Academic%20Free%20%7C%20Commercial%20Royalty-green" alt="License"></a>
